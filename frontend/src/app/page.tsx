@@ -104,6 +104,13 @@ export default function Home() {
         throw new Error(`Save failed with status ${res.status}`);
       }
 
+      const subsRes = await fetch(`${API_BASE}/api/subscriptions`);
+      if (!subsRes.ok) throw new Error("Failed to refresh subscriptions");
+      const subsData: Subscription[] = await subsRes.json();
+
+      setSubs(subsData);
+      setSelectedLines(new Set(subsData.map((s) => s.line_id)));
+
       setMessage("Subscriptions saved!");
     } catch (err: any) {
       setError(err.message ?? "Save failed");

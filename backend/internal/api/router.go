@@ -5,10 +5,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Ryley4/NYCTcord/backend/internal/db"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
-
-	"github.com/Ryley4/NYCTcord/backend/internal/db"
 )
 
 type Server struct {
@@ -17,6 +16,33 @@ type Server struct {
 
 func NewServer(database *db.DB) *Server {
 	return &Server{DB: database}
+}
+
+type LineStatus struct {
+	LineID    string    `json:"line_id"`
+	Status    string    `json:"status"`
+	Header    *string   `json:"header,omitempty"`
+	Body      *string   `json:"body,omitempty"`
+	Effect    *string   `json:"effect,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type Subscription struct {
+	ID       int64     `json:"id"`
+	LineID   string    `json:"line_id"`
+	ViaDM    bool      `json:"via_dm"`
+	ViaGuild bool      `json:"via_guild"`
+	Created  time.Time `json:"created_at"`
+}
+
+type setSubscriptionsRequest struct {
+	Lines    []string `json:"lines"`
+	ViaDM    bool     `json:"via_dm"`
+	ViaGuild bool     `json:"via_guild"`
+}
+
+func (s *Server) currentUserID(r *http.Request) int64 {
+	return 1
 }
 
 func (s *Server) Router() http.Handler {
@@ -28,13 +54,16 @@ func (s *Server) Router() http.Handler {
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
-		MaxAge:           300, //seconds
+		MaxAge:           300,
 	}))
 
 	r.Get("/health", s.handleHealth)
-	r.Get("/api/lines", s.handleGetLines)
-	r.Get("/api/subscriptions", s.handleGetSubscriptions)
-	r.Post("/api/subscripitons", s.handleSetSubscriptions)
+
+	r.Route("/api", func(r chi.Router) {
+		r.Get("/lines", s.handleGetLines)
+		r.Get("/subscriptions", s.handleGetSubscriptions)
+		r.Post("/subscriptions", s.handleSetSubscriptions)
+	})
 
 	return r
 }
@@ -42,22 +71,6 @@ func (s *Server) Router() http.Handler {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
-}
-
-type Subscription struct {
-	ID       int64     `json:"id"`
-	LineID   string    `json:"line_id"`
-	ViaDM    bool      `json:"via_dm"`
-	ViaGuild bool      `json:"via_guild"`
-	Created  time.Time `json:"created_at"`
-}
-type LineStatus struct {
-	LineID    string    `json:"line_id"`
-	Status    string    `json:"status"`
-	Header    *string   `json:"header,omitempty"`
-	Body      *string   `json:"body,omitempty"`
-	Effect    *string   `json:"effect,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (s *Server) handleGetLines(w http.ResponseWriter, r *http.Request) {
@@ -72,7 +85,7 @@ func (s *Server) handleGetLines(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var lines []LineStatus
+	lines := make([]LineStatus, 0)
 
 	for rows.Next() {
 		var ls LineStatus
@@ -106,12 +119,6 @@ func (s *Server) handleGetLines(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(lines)
-}
-
-// TEMP: until we have real auth
-func (s *Server) currentUserID(r *http.Request) int64 {
-	// hardcode user_id = 1 for now
-	return 1
 }
 
 func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) {
@@ -161,12 +168,6 @@ func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(subs)
-}
-
-type setSubscriptionsRequest struct {
-	Lines    []string `json:"lines"`
-	ViaDM    bool     `json:"via_dm"`
-	ViaGuild bool     `json:"via_guild"`
 }
 
 func (s *Server) handleSetSubscriptions(w http.ResponseWriter, r *http.Request) {
