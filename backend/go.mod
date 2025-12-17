@@ -1,4 +1,4 @@
-module github.com/Ryley4/NYCTcord
+module github.com/Ryley4/NYCTcord/backend
 
 go 1.25.4
 
