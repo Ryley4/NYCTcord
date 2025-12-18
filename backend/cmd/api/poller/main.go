@@ -88,7 +88,32 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 				}
 
 				h := contentHash(effect, header, body)
+
+				cand := bestAlert{
+					effect: effect,
+					header: header,
+					body: 	body,
+					hash: 	h,
+				}
+
+				cur, ok := bestByLine[lineID]
+				if !ok || severityRank(cand.effect) > severityRank(cur.effect) {
+					bestByLine[lineID] = cand
+				}
 			}
 		}
 	}
+
+	ctx, cancel : := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for lineID, alert := range bestByLine {
+		status := statusFromEffect(alert.effect)
+		upsertLineStatus(ctx, database, lineID, status, alert.header, alert., alert.effect, alert.hash)
+	}
+
+	log.Printf("poller: updated %d lines", len(bestByLine))
+}
+
+func fetchFeed(client *http.Client, url string) (*gtfsrt.FeedMessage, error) {
 }
