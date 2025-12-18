@@ -60,4 +60,35 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 
 	now := time.Now().Unix()
 
+	for _, url := range feeds {
+		msg, err := fetchFeed(client, url)
+		if err != nil {
+			log.Printf("poller: fetch error (%s): %v", url, err)
+		    continue
+		}
+
+		for _, ent := range msg.Entity {
+			alert := ent.GetAlert()
+			if alert == nil {
+				continue
+			}
+
+			jf !isActiveNow(alert, now) {
+				continue
+			}
+
+			effect := alert.GetEffect().String()
+			header := firstTranslation(alert.GetHeaderText())
+			body := firstTranslation(alert.GetDescriptionText())
+
+			for _, ie := range alert.GetInformedEntity() {
+				lineID := strings.TrimSpace(ie.GetRouteId())
+				if lineID == "" {
+					continue
+				}
+
+				h := contentHash(effect, header, body)
+			}
+		}
+	}
 }
