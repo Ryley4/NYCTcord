@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"io"
 
 	"github.com/Ryley4/NYCTcord/backend/internal/db"
 )
@@ -104,7 +105,7 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 		}
 	}
 
-	ctx, cancel : := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	for lineID, alert := range bestByLine {
@@ -116,4 +117,92 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 }
 
 func fetchFeed(client *http.Client, url string) (*gtfsrt.FeedMessage, error) {
+	resp, err := client.Get(url)
+	if !err = nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var msg gtfsrt.FeedMessage
+	if err := proto.Unmarshal (b, &msg); err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
+func isActiveNow(a *gtfsrt.Alert, now int64) bool {
+	aps := a.GetActivePeriod()
+	if len(aps) == 0 {
+		return true
+	}
+	for _, ap := range aps {
+		start := ap.GetStart()
+		end := ap.GetEnd()
+		if (start == 0 || now >= start) && (end == 0 || now <= end) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstTranslation(t *gtfsrt.TranslatedString) string {
+	if t == nil || len(t.Translation) == 0 {
+		return ""
+	}
+	return t.Translation[0].GetText()
+}
+
+func contentHash(effect, header, body string) string {
+	sum := sha256.Sum256([]byte(effect + "\n" + header + "\n" + body))
+	return hex.EncodeToString(sum[:])
+}
+
+func severityRank(effect string) int {
+	switch effect {
+	case "NO_SERVICE":
+		return 5
+	case "REDUCED_SERVICE":
+		return 4
+	case "SIGNIFICANT_DELAYS":
+		return 3
+	case "DETOUR":
+		return 2
+	case "MODIFIED_SERVICE":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func statusFromEffect(effect string) string {
+	switch effect {
+	case "NO_SERVICE":
+		return "No Service"
+	case "REDUCED_SERVICE":
+		return "Reduced Service"
+	case "SIGNIFICANT_DELAYS":
+		return "Delays"
+	case "DETOUR", "MODIFIED_SERVICE":
+		return "Service Change"
+	default:
+		return "Alert"
+	}
+}
+
+func upsertLineStatus(ctx context.Context, database *db.DB, lineID, status, header, body, effect, hash string) {
+	_, _ = database.ExecContext(ctx, `
+		INSERT INTO line_status (line_id, status, header, body, effect, updated_at)
+		VALUES (?, ?, ?, ?, ?, datetime('now'))
+		ON CONFLICT(line_id) DO UPDATE SET
+			status=excluded.status,
+			header=excluded.header,
+			body=excluded.body,
+			effect=excluded.effect,
+			updated_at=excluded.updated_at
+	`, lineID, status, header, body, effect)
 }
