@@ -73,8 +73,7 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 			if alert == nil {
 				continue
 			}
-
-			jf !isActiveNow(alert, now) {
+			if !isActiveNow(alert, now) {
 				continue
 			}
 
@@ -118,7 +117,7 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 
 func fetchFeed(client *http.Client, url string) (*gtfsrt.FeedMessage, error) {
 	resp, err := client.Get(url)
-	if !err = nil {
+	if !err := nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
