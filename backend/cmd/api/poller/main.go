@@ -64,7 +64,7 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 
 	bestByLine := map[string]bestAlert{}
 
-	now := time.Now().Unix()
+	now := uint64(time.Now().Unix())
 
 	for _, url := range feeds {
 		msg, err := fetchFeed(client, url)
@@ -139,7 +139,7 @@ func fetchFeed(client *http.Client, url string) (*gtfsrt.FeedMessage, error) {
 	return &msg, nil
 }
 
-func isActiveNow(a *gtfsrt.Alert, now int64) bool {
+func isActiveNow(a *gtfsrt.Alert, now uint64) bool {
 	aps := a.GetActivePeriod()
 	if len(aps) == 0 {
 		return true
