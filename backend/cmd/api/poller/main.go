@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
-	"io"
 
 	"github.com/Ryley4/NYCTcord/backend/internal/db"
+	"google.golang.org/protobuf/proto"
 )
 
 var defaultFeeds = []string{
@@ -65,7 +69,7 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 		msg, err := fetchFeed(client, url)
 		if err != nil {
 			log.Printf("poller: fetch error (%s): %v", url, err)
-		    continue
+			continue
 		}
 
 		for _, ent := range msg.Entity {
@@ -92,8 +96,8 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 				cand := bestAlert{
 					effect: effect,
 					header: header,
-					body: 	body,
-					hash: 	h,
+					body:   body,
+					hash:   h,
 				}
 
 				cur, ok := bestByLine[lineID]
@@ -109,7 +113,7 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 
 	for lineID, alert := range bestByLine {
 		status := statusFromEffect(alert.effect)
-		upsertLineStatus(ctx, database, lineID, status, alert.header, alert., alert.effect, alert.hash)
+		upsertLineStatus(ctx, database, lineID, status, alert.header, alert.body, alert.effect, alert.hash)
 	}
 
 	log.Printf("poller: updated %d lines", len(bestByLine))
@@ -117,7 +121,7 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 
 func fetchFeed(client *http.Client, url string) (*gtfsrt.FeedMessage, error) {
 	resp, err := client.Get(url)
-	if !err := nil {
+	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -128,7 +132,7 @@ func fetchFeed(client *http.Client, url string) (*gtfsrt.FeedMessage, error) {
 	}
 
 	var msg gtfsrt.FeedMessage
-	if err := proto.Unmarshal (b, &msg); err != nil {
+	if err := proto.Unmarshal(b, &msg); err != nil {
 		return nil, err
 	}
 	return &msg, nil
