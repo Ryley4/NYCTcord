@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	gtfsrt "github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs"
 	"github.com/Ryley4/NYCTcord/backend/internal/db"
 	"google.golang.org/protobuf/proto"
 )
@@ -43,7 +44,7 @@ func main() {
 
 	feeds := defaultFeeds
 	if v := strings.TrimSpace(os.Getenv("MTA_FEEDS")); v != "" {
-		feeds = string.Split(v, ",")
+		feeds = strings.Split(v, ",")
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
