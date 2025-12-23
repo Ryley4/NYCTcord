@@ -19,7 +19,6 @@ import (
 )
 
 var defaultFeeds = []string{
-	// MTA GTFS-Realtime Alerts feed (Subway Alerts)
 	"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fsubway-alerts",
 }
 
@@ -54,7 +53,6 @@ func main() {
 
 	client := &http.Client{Timeout: 15 * time.Second}
 
-	// Run immediately, then every 5 minutes
 	runOnce(database, client, feeds)
 
 	ticker := time.NewTicker(5 * time.Minute)
@@ -146,12 +144,6 @@ func fetchFeed(client *http.Client, url string) (*gtfsrt.FeedMessage, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
-	}
-
-	// If required for your account, set:
-	// export MTA_API_KEY="..."
-	if key := strings.TrimSpace(os.Getenv("MTA_API_KEY")); key != "" {
-		req.Header.Set("x-api-key", key)
 	}
 
 	resp, err := client.Do(req)
@@ -269,7 +261,6 @@ func upsertLineStatusIfChanged(
 		return false, err
 	}
 
-	// No change -> stay quiet
 	if err != sql.ErrNoRows && existingHash.Valid && existingHash.String == hash {
 		return false, nil
 	}
@@ -279,7 +270,6 @@ func upsertLineStatusIfChanged(
 		oldStatus = existingStatus.String
 	}
 
-	// Record change event
 	res, err := database.ExecContext(ctx, `
 		INSERT INTO alerts (alert_id, line_id, old_status, new_status, header, body, effect, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -290,7 +280,6 @@ func upsertLineStatusIfChanged(
 
 	alertRowID, _ := res.LastInsertId()
 
-	// Queue notifications for subscribers of this line or ALL
 	_, err = database.ExecContext(ctx, `
 		INSERT INTO notifications (user_id, alert_id, line_id, channel_type, status, created_at)
 		SELECT s.user_id, ?, ?, 'dm', 'pending', datetime('now')
@@ -301,7 +290,6 @@ func upsertLineStatusIfChanged(
 		return false, err
 	}
 
-	// Update snapshot row
 	_, err = database.ExecContext(ctx, `
 		INSERT INTO line_status (line_id, status, header, body, effect, content_hash, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
