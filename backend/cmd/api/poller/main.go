@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 )
 
 var defaultFeeds = []string{
+	// MTA GTFS-Realtime Alerts feed (Subway Alerts)
 	"https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fsubway-alerts",
 }
 
@@ -36,15 +39,26 @@ func main() {
 
 	feeds := defaultFeeds
 	if v := strings.TrimSpace(os.Getenv("MTA_FEEDS")); v != "" {
-		feeds = strings.Split(v, ",")
+		parts := strings.Split(v, ",")
+		tmp := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				tmp = append(tmp, p)
+			}
+		}
+		if len(tmp) > 0 {
+			feeds = tmp
+		}
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
 
+	// Run immediately, then every 5 minutes
+	runOnce(database, client, feeds)
+
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-
-	runOnce(database, client, feeds)
 
 	for range ticker.C {
 		runOnce(database, client, feeds)
@@ -55,7 +69,6 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 	log.Printf("poller: fetching %d feeds", len(feeds))
 
 	bestByLine := map[string]bestAlert{}
-
 	now := uint64(time.Now().Unix())
 
 	for _, url := range feeds {
@@ -65,7 +78,7 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 			continue
 		}
 
-		for _, ent := range msg.Entity {
+		for _, ent := range msg.GetEntity() {
 			alert := ent.GetAlert()
 			if alert == nil {
 				continue
@@ -77,20 +90,19 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 			effect := alert.GetEffect().String()
 			header := firstTranslation(alert.GetHeaderText())
 			body := firstTranslation(alert.GetDescriptionText())
+			h := contentHash(effect, header, body)
+
+			cand := bestAlert{
+				effect: effect,
+				header: header,
+				body:   body,
+				hash:   h,
+			}
 
 			for _, ie := range alert.GetInformedEntity() {
 				lineID := strings.TrimSpace(ie.GetRouteId())
 				if lineID == "" {
 					continue
-				}
-
-				h := contentHash(effect, header, body)
-
-				cand := bestAlert{
-					effect: effect,
-					header: header,
-					body:   body,
-					hash:   h,
 				}
 
 				cur, ok := bestByLine[lineID]
@@ -104,16 +116,45 @@ func runOnce(database *db.DB, client *http.Client, feeds []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	for lineID, alert := range bestByLine {
-		status := statusFromEffect(alert.effect)
-		upsertLineStatus(ctx, database, lineID, status, alert.header, alert.body, alert.effect, alert.hash)
+	changedCount := 0
+	for lineID, a := range bestByLine {
+		status := statusFromEffect(a.effect)
+
+		changed, err := upsertLineStatusIfChanged(
+			ctx,
+			database,
+			lineID,
+			status,
+			a.header,
+			a.body,
+			a.effect,
+			a.hash,
+		)
+		if err != nil {
+			log.Printf("poller: upsert error for line %s: %v", lineID, err)
+			continue
+		}
+		if changed {
+			changedCount++
+		}
 	}
 
-	log.Printf("poller: updated %d lines", len(bestByLine))
+	log.Printf("poller: changed %d lines", changedCount)
 }
 
 func fetchFeed(client *http.Client, url string) (*gtfsrt.FeedMessage, error) {
-	resp, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// If required for your account, set:
+	// export MTA_API_KEY="..."
+	if key := strings.TrimSpace(os.Getenv("MTA_API_KEY")); key != "" {
+		req.Header.Set("x-api-key", key)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -124,9 +165,18 @@ func fetchFeed(client *http.Client, url string) (*gtfsrt.FeedMessage, error) {
 		return nil, err
 	}
 
+	if resp.StatusCode != http.StatusOK {
+		snippet := string(b)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		return nil, fmt.Errorf("HTTP %d from %s: %q", resp.StatusCode, url, snippet)
+	}
+
 	var msg gtfsrt.FeedMessage
 	if err := proto.Unmarshal(b, &msg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal failed (content-type=%q bytes=%d): %w",
+			resp.Header.Get("Content-Type"), len(b), err)
 	}
 	return &msg, nil
 }
@@ -147,10 +197,10 @@ func isActiveNow(a *gtfsrt.Alert, now uint64) bool {
 }
 
 func firstTranslation(t *gtfsrt.TranslatedString) string {
-	if t == nil || len(t.Translation) == 0 {
+	if t == nil || len(t.GetTranslation()) == 0 {
 		return ""
 	}
-	return t.Translation[0].GetText()
+	return t.GetTranslation()[0].GetText()
 }
 
 func contentHash(effect, header, body string) string {
@@ -190,15 +240,82 @@ func statusFromEffect(effect string) string {
 	}
 }
 
-func upsertLineStatus(ctx context.Context, database *db.DB, lineID, status, header, body, effect, hash string) {
-	_, _ = database.ExecContext(ctx, `
-		INSERT INTO line_status (line_id, status, header, body, effect, updated_at)
-		VALUES (?, ?, ?, ?, ?, datetime('now'))
+func nullIfEmpty(s string) any {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return s
+}
+
+func upsertLineStatusIfChanged(
+	ctx context.Context,
+	database *db.DB,
+	lineID,
+	status,
+	header,
+	body,
+	effect,
+	hash string,
+) (bool, error) {
+	var existingHash sql.NullString
+	var existingStatus sql.NullString
+
+	err := database.QueryRowContext(ctx,
+		`SELECT content_hash, status FROM line_status WHERE line_id = ?`,
+		lineID,
+	).Scan(&existingHash, &existingStatus)
+
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+
+	// No change -> stay quiet
+	if err != sql.ErrNoRows && existingHash.Valid && existingHash.String == hash {
+		return false, nil
+	}
+
+	oldStatus := ""
+	if existingStatus.Valid {
+		oldStatus = existingStatus.String
+	}
+
+	// Record change event
+	res, err := database.ExecContext(ctx, `
+		INSERT INTO alerts (alert_id, line_id, old_status, new_status, header, body, effect, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+	`, "", lineID, oldStatus, status, nullIfEmpty(header), nullIfEmpty(body), nullIfEmpty(effect))
+	if err != nil {
+		return false, err
+	}
+
+	alertRowID, _ := res.LastInsertId()
+
+	// Queue notifications for subscribers of this line or ALL
+	_, err = database.ExecContext(ctx, `
+		INSERT INTO notifications (user_id, alert_id, line_id, channel_type, status, created_at)
+		SELECT s.user_id, ?, ?, 'dm', 'pending', datetime('now')
+		FROM subscriptions s
+		WHERE s.line_id = ? OR s.line_id = 'ALL'
+	`, alertRowID, lineID, lineID)
+	if err != nil {
+		return false, err
+	}
+
+	// Update snapshot row
+	_, err = database.ExecContext(ctx, `
+		INSERT INTO line_status (line_id, status, header, body, effect, content_hash, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(line_id) DO UPDATE SET
-			status=excluded.status,
-			header=excluded.header,
-			body=excluded.body,
-			effect=excluded.effect,
-			updated_at=excluded.updated_at
-	`, lineID, status, header, body, effect)
+			status       = excluded.status,
+			header       = excluded.header,
+			body         = excluded.body,
+			effect       = excluded.effect,
+			content_hash = excluded.content_hash,
+			updated_at   = excluded.updated_at
+	`, lineID, status, nullIfEmpty(header), nullIfEmpty(body), nullIfEmpty(effect), hash)
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
