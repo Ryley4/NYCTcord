@@ -1,8 +1,10 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Ryley4/NYCTcord/backend/internal/db"
@@ -63,6 +65,8 @@ func (s *Server) Router() http.Handler {
 		r.Get("/lines", s.handleGetLines)
 		r.Get("/subscriptions", s.handleGetSubscriptions)
 		r.Post("/subscriptions", s.handleSetSubscriptions)
+		r.Get("/api/alerts/recent", s.handleGetRecentAlerts)
+		r.Get("/api/notifications/pending", s.handleGetPendingNotifications)
 	})
 
 	return r
@@ -223,4 +227,135 @@ func (s *Server) handleSetSubscriptions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type RecentAlert struct {
+	ID        int64   `json:"id"`
+	LineID    string  `json:"line_id"`
+	OldStatus *string `json:"old_status,omitempty"`
+	NewStatus *string `json:"new_status,omitempty"`
+	Header    *string `json:"header,omitempty"`
+	Effect    *string `json:"effect,omitempty"`
+	CreatedAt string  `json:"created_at"`
+}
+
+func (s *Server) handleGetRecentAlerts(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r, 50, 200)
+
+	rows, err := s.DB.Query(`
+		SELECT id, line_id, old_status, new_status, header, effect, created_at
+		FROM alerts
+		ORDER BY id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	out := make([]RecentAlert, 0)
+
+	for rows.Next() {
+		var a RecentAlert
+		var oldStatus, newStatus, header, effect sql.NullString
+
+		if err := rows.Scan(&a.ID, &a.LineID, &oldStatus, &newStatus, &header, &effect, &a.CreatedAt); err != nil {
+			http.Error(w, "scan error", http.StatusInternalServerError)
+			return
+		}
+
+		if oldStatus.Valid {
+			a.OldStatus = &oldStatus.String
+		}
+		if newStatus.Valid {
+			a.NewStatus = &newStatus.String
+		}
+		if header.Valid {
+			a.Header = &header.String
+		}
+		if effect.Valid {
+			a.Effect = &effect.String
+		}
+
+		out = append(out, a)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
+type PendingNotification struct {
+	ID        int64   `json:"id"`
+	UserID    int64   `json:"user_id"`
+	DiscordID string  `json:"discord_id"`
+	LineID    string  `json:"line_id"`
+	Header    *string `json:"header,omitempty"`
+	Body      *string `json:"body,omitempty"`
+	CreatedAt string  `json:"created_at"`
+}
+
+func (s *Server) handleGetPendingNotifications(w http.ResponseWriter, r *http.Request) {
+	limit := parseLimit(r, 50, 200)
+
+	rows, err := s.DB.Query(`
+		SELECT
+			n.id,
+			n.user_id,
+			u.discord_id,
+			n.line_id,
+			a.header,
+			a.body,
+			n.created_at
+		FROM notifications n
+		JOIN users u ON u.id = n.user_id
+		JOIN alerts a ON a.id = n.alert_id
+		WHERE n.status = 'pending'
+		ORDER BY n.id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	out := make([]PendingNotification, 0)
+
+	for rows.Next() {
+		var n PendingNotification
+		var header, body sql.NullString
+
+		if err := rows.Scan(&n.ID, &n.UserID, &n.DiscordID, &n.LineID, &header, &body, &n.CreatedAt); err != nil {
+			http.Error(w, "scan error", http.StatusInternalServerError)
+			return
+		}
+
+		if header.Valid {
+			n.Header = &header.String
+		}
+		if body.Valid {
+			n.Body = &body.String
+		}
+
+		out = append(out, n)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
+func parseLimit(r *http.Request, def, max int) int {
+	q := r.URL.Query().Get("limit")
+	if q == "" {
+		return def
+	}
+	n, err := strconv.Atoi(q)
+	if err != nil || n <= 0 {
+		return def
+	}
+	if n > max {
+		return max
+	}
+	return n
 }
